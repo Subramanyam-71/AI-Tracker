@@ -1,3 +1,4 @@
+
 package com.subramanyam.lifetracker.service;
 
 import com.subramanyam.lifetracker.model.DailyProgress;
@@ -43,12 +44,10 @@ public class ProgressService {
     }
 
     /**
-     * Returns progress for the requested date.
+     * Returns saved progress for a date.
      *
-     * If the date already exists, return its saved data.
-     *
-     * If it is a new date, copy the latest saved day's
-     * tasks AND their statuses.
+     * For a new date, carries forward the latest saved
+     * tasks and their statuses.
      */
     public DailyProgress getProgressFor(LocalDate date) {
 
@@ -58,13 +57,11 @@ public class ProgressService {
             return existing;
         }
 
-        // Find the latest saved date.
         LocalDate latestDate = progressByDate.keySet()
                 .stream()
                 .max(LocalDate::compareTo)
                 .orElse(null);
 
-        // If previous data exists, copy it.
         if (latestDate != null) {
 
             DailyProgress latestProgress =
@@ -74,66 +71,49 @@ public class ProgressService {
 
             for (Task oldTask : latestProgress.getTasks()) {
 
-                Task newTask =
-                        new Task(oldTask.getName());
+                Task newTask = new Task(oldTask.getName());
 
-                // Keep the same status.
-                newTask.setStatus(
-                        oldTask.getStatus()
-                );
+                newTask.setStatus(oldTask.getStatus());
 
                 tasks.add(newTask);
             }
 
-            DailyProgress newDay =
-                    new DailyProgress(date, tasks);
+            DailyProgress newDay = new DailyProgress(date, tasks);
 
             progressByDate.put(date, newDay);
-
             save();
 
             return newDay;
         }
 
-        // First day of the application.
-        DailyProgress firstDay =
-                createFreshDay(date);
+        DailyProgress firstDay = createFreshDay(date);
 
         progressByDate.put(date, firstDay);
-
         save();
 
         return firstDay;
     }
 
-    /**
-     * Returns existing progress for a date.
-     */
     public DailyProgress getExistingProgress(LocalDate date) {
         return progressByDate.get(date);
     }
 
     /**
-     * Saves all progress data.
+     * Saves all daily progress without deleting historical data.
      */
     public void save() {
 
         try {
-
-            Files.createDirectories(
-                    SAVE_FILE.getParent()
-            );
+            Files.createDirectories(SAVE_FILE.getParent());
 
             try (ObjectOutputStream output =
                          new ObjectOutputStream(
-                                 Files.newOutputStream(SAVE_FILE)
-                         )) {
+                                 Files.newOutputStream(SAVE_FILE))) {
 
                 output.writeObject(progressByDate);
             }
 
         } catch (IOException exception) {
-
             System.err.println(
                     "Could not save Life Progress data: "
                             + exception.getMessage()
@@ -141,9 +121,6 @@ public class ProgressService {
         }
     }
 
-    /**
-     * Loads saved progress.
-     */
     @SuppressWarnings("unchecked")
     private void load() {
 
@@ -153,13 +130,11 @@ public class ProgressService {
 
         try (ObjectInputStream input =
                      new ObjectInputStream(
-                             Files.newInputStream(SAVE_FILE)
-                     )) {
+                             Files.newInputStream(SAVE_FILE))) {
 
             Object savedData = input.readObject();
 
             if (savedData instanceof Map<?, ?>) {
-
                 progressByDate.putAll(
                         (Map<LocalDate, DailyProgress>) savedData
                 );
@@ -170,7 +145,6 @@ public class ProgressService {
                 ClassNotFoundException |
                 ClassCastException exception
         ) {
-
             System.err.println(
                     "Could not load Life Progress data: "
                             + exception.getMessage()
@@ -179,45 +153,50 @@ public class ProgressService {
     }
 
     /**
-     * Counts tasks by status for the month.
+     * Monthly progress uses the latest saved snapshot
+     * within the requested month.
      *
-     * This keeps the original monthly total behavior.
+     * This prevents carried-forward tasks from being
+     * counted again for every day.
+     */
+    private List<Task> getMonthlyTasks(YearMonth month) {
+
+        return progressByDate.entrySet()
+                .stream()
+                .filter(entry ->
+                        YearMonth.from(entry.getKey()).equals(month)
+                )
+                .max(Map.Entry.comparingByKey())
+                .map(entry ->
+                        new ArrayList<>(entry.getValue().getTasks())
+                )
+                .orElseGet(ArrayList::new);
+    }
+
+    /**
+     * Counts each task in the latest monthly snapshot once.
      */
     public int getMonthlyTaskCount(
             YearMonth month,
             TaskStatus status
     ) {
 
-        return getMonthlyTasks(month)
+        return (int) getMonthlyTasks(month)
                 .stream()
-                .mapToInt(task ->
-                        task.getStatus() == status
-                                ? 1
-                                : 0
-                )
-                .sum();
+                .filter(task -> task.getStatus() == status)
+                .count();
     }
 
     /**
-     * Returns total task records for the month.
+     * Returns the number of tasks in the latest monthly snapshot.
      */
-    public int getMonthlyTaskTotal(
-            YearMonth month
-    ) {
-
+    public int getMonthlyTaskTotal(YearMonth month) {
         return getMonthlyTasks(month).size();
     }
 
     /**
-     * Returns 1 if the latest saved status of this goal
-     * matches the requested status, otherwise 0.
-     *
-     * This prevents:
-     *
-     * Today   -> Completed
-     * Tomorrow -> Completed
-     *
-     * from being counted as 2/2.
+     * Returns 1 if this goal's latest monthly status matches
+     * the requested status; otherwise returns 0.
      */
     public int getMonthlyTaskCountForGoal(
             YearMonth month,
@@ -225,141 +204,53 @@ public class ProgressService {
             TaskStatus status
     ) {
 
-        Task latestTask = progressByDate.entrySet()
+        return (int) getMonthlyTasks(month)
                 .stream()
-
-                .filter(entry ->
-                        YearMonth.from(entry.getKey())
-                                .equals(month)
-                )
-
-                .sorted(
-                        Map.Entry
-                                .<LocalDate, DailyProgress>
-                                comparingByKey()
-                                .reversed()
-                )
-
-                .flatMap(entry ->
-                        entry.getValue()
-                                .getTasks()
-                                .stream()
-                )
-
-                .filter(task ->
-                        task.getName()
-                                .equals(goalName)
-                )
-
-                .findFirst()
-                .orElse(null);
-
-        if (latestTask == null) {
-            return 0;
-        }
-
-        return latestTask.getStatus() == status
-                ? 1
-                : 0;
+                .filter(task -> task.getName().equals(goalName))
+                .filter(task -> task.getStatus() == status)
+                .limit(1)
+                .count();
     }
 
     /**
-     * Returns 1 when this goal exists in the month.
-     *
-     * It does not count the same carried-forward goal
-     * multiple times.
+     * Each goal name contributes at most one to the breakdown.
      */
     public int getMonthlyTaskTotalForGoal(
             YearMonth month,
             String goalName
     ) {
 
-        boolean exists =
-                progressByDate.entrySet()
-                        .stream()
-
-                        .filter(entry ->
-                                YearMonth.from(entry.getKey())
-                                        .equals(month)
-                        )
-
-                        .flatMap(entry ->
-                                entry.getValue()
-                                        .getTasks()
-                                        .stream()
-                        )
-
-                        .anyMatch(task ->
-                                task.getName()
-                                        .equals(goalName)
-                        );
-
-        return exists ? 1 : 0;
+        return getMonthlyTasks(month)
+                .stream()
+                .anyMatch(task -> task.getName().equals(goalName))
+                ? 1 : 0;
     }
 
     /**
-     * Returns goal names that were tracked during the month.
+     * Returns unique goal names from the latest monthly snapshot.
      */
-    public Set<String> getMonthlyGoalNames(
-            YearMonth month
-    ) {
+    public Set<String> getMonthlyGoalNames(YearMonth month) {
 
-        Set<String> names =
-                new LinkedHashSet<>();
+        Set<String> names = new LinkedHashSet<>();
 
-        getMonthlyTasks(month)
-                .forEach(task ->
-                        names.add(task.getName())
-                );
+        getMonthlyTasks(month).forEach(
+                task -> names.add(task.getName())
+        );
 
         return names;
     }
 
     /**
-     * Gets all task records stored for the month.
-     */
-    private List<Task> getMonthlyTasks(
-            YearMonth month
-    ) {
-
-        return progressByDate
-                .entrySet()
-                .stream()
-
-                .filter(entry ->
-                        YearMonth.from(entry.getKey())
-                                .equals(month)
-                )
-
-                .flatMap(entry ->
-                        entry.getValue()
-                                .getTasks()
-                                .stream()
-                )
-
-                .toList();
-    }
-
-    /**
      * Creates the first day with the default tasks.
      */
-    private DailyProgress createFreshDay(
-            LocalDate date
-    ) {
+    private DailyProgress createFreshDay(LocalDate date) {
 
-        List<Task> tasks =
-                new ArrayList<>();
+        List<Task> tasks = new ArrayList<>();
 
         for (String name : DEFAULT_TASK_NAMES) {
-
-            tasks.add(
-                    new Task(name)
-            );
+            tasks.add(new Task(name));
         }
 
-        return new DailyProgress(
-                date,
-                tasks
-        );
+        return new DailyProgress(date, tasks);
     }
 }
